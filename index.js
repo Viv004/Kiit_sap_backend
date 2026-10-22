@@ -30,6 +30,23 @@ async function getWebDynproFrame(page) {
   return page.frame({ name: /ivuFrm_page0ivu3|Desktop Inner Page/i }) || page.mainFrame();
 }
 
+async function waitForHostelDetailsFrame(page, timeout = 15000) {
+  const deadline = Date.now() + timeout;
+
+  while (Date.now() < deadline) {
+    for (const frame of page.frames()) {
+      const bodyText = await frame.locator('body').innerText().catch(() => '');
+      if (/student details/i.test(bodyText) && /hostel id/i.test(bodyText) && /room id/i.test(bodyText)) {
+        return frame;
+      }
+    }
+
+    await page.waitForTimeout(500);
+  }
+
+  throw new Error('SAP did not render Student Details with Hostel ID and Room ID after opening Leave Application.');
+}
+
 /**
  * Selects an actual option from the SAP Web Dynpro combo popup so its
  * client-side selection events are raised.
@@ -200,6 +217,9 @@ app.post('/api/service', async (req, res) => {
 
     await page.waitForTimeout(4000);
     let wdFrame = await getWebDynproFrame(page);
+    if (/leave application for students/i.test(serviceTitle)) {
+      wdFrame = await waitForHostelDetailsFrame(page);
+    }
 
     if (params.year && params.session) {
       await selectSapDropdown(page, wdFrame, 'Year', params.year);
