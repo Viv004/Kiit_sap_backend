@@ -42,14 +42,33 @@ async function selectSapDropdown(page, wdFrame, labelText, optionValue) {
   }
 
   const targetIndex = label.toLowerCase().includes('year') ? 0 : 1;
-  const combos = wdFrame.locator('input[ct="CB"]');
-  const count = await combos.count();
+  const selector = 'input[ct="CB"], input[role="combobox"], select';
+  let combo;
 
-  if (count <= targetIndex) {
-    throw new Error(`Could not find the SAP ${label} dropdown`);
+  for (const frame of page.frames()) {
+    const combos = frame.locator(selector);
+    if (await combos.count() > targetIndex) {
+      combo = combos.nth(targetIndex);
+      break;
+    }
   }
 
-  const combo = combos.nth(targetIndex);
+  if (!combo) {
+    const controls = await wdFrame.locator('input, select, [role="combobox"]').evaluateAll(elements =>
+      elements.slice(0, 10).map(element => ({
+        tag: element.tagName,
+        id: element.id || '',
+        name: element.getAttribute('name') || '',
+        controlType: element.getAttribute('ct') || '',
+        role: element.getAttribute('role') || '',
+        label: element.getAttribute('aria-label') || element.getAttribute('title') || ''
+      }))
+    ).catch(() => []);
+    throw new Error(
+      `Could not find the SAP ${label} dropdown. Found no matching combo in ${page.frames().length} frames; controls in the selected frame: ${JSON.stringify(controls)}`
+    );
+  }
+
   await combo.click();
   await wdFrame.waitForTimeout(250);
 
@@ -225,6 +244,17 @@ app.post('/api/service', async (req, res) => {
             .map(cell => normalizeText(cell.innerText)))
           .filter(row => row.some(Boolean))
       ).filter(table => table.length > 0);
+
+      for (const table of cleanTables) {
+        for (const row of table) {
+          const key = row[0]?.replace(/:\s*$/, '').trim();
+          const value = row[1]?.trim();
+          const profileField = /^(student name|school(?: name| code)?|branch|mentor name|co-mentor name|hostel(?: id| name| block| details)?|room(?: id| no\.?| number)?|roll no\.?|reg\.? no\.?|program of study)$/i;
+          if (row.length === 2 && key && profileField.test(key) && value && value.length < 200) {
+            metadata[key] = value;
+          }
+        }
+      }
 
       const headerIndexes = (header) => {
         const find = (pattern) => header.findIndex(cell => pattern.test(cell));
