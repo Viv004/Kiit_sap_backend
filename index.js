@@ -247,32 +247,64 @@ app.post('/api/service', async (req, res) => {
         })
       );
 
-      if (!attendanceTable) return { metadata, tables: cleanTables };
-
-      const headerIndex = attendanceTable.findIndex(row => {
-        const columns = headerIndexes(row);
-        return columns.subject >= 0 && columns.present >= 0 &&
-          columns.percentage >= 0 && columns.totalDays >= 0;
-      });
-      const columns = headerIndexes(attendanceTable[headerIndex]);
       const numberAt = (row, index) => {
         if (index < 0 || !row[index]) return null;
         const parsed = Number.parseFloat(row[index].replace(/,/g, '').replace('%', ''));
         return Number.isFinite(parsed) ? parsed : null;
       };
-      const attendance = attendanceTable.slice(headerIndex + 1).map(row => ({
-        subject: row[columns.subject] || '',
-        absent: numberAt(row, columns.absent),
-        present: numberAt(row, columns.present),
-        percentage: numberAt(row, columns.percentage),
-        facultyId: columns.facultyId >= 0 ? row[columns.facultyId] || '' : '',
-        totalDays: numberAt(row, columns.totalDays),
-        facultyName: columns.facultyName >= 0 ? row[columns.facultyName] || '' : '',
-        excuses: numberAt(row, columns.excuses) ?? 0
-      })).filter(row =>
+      let attendance = [];
+
+      if (attendanceTable) {
+        const headerIndex = attendanceTable.findIndex(row => {
+          const columns = headerIndexes(row);
+          return columns.subject >= 0 && columns.present >= 0 &&
+            columns.percentage >= 0 && columns.totalDays >= 0;
+        });
+        const columns = headerIndexes(attendanceTable[headerIndex]);
+        attendance = attendanceTable.slice(headerIndex + 1).map(row => ({
+          subject: row[columns.subject] || '',
+          absent: numberAt(row, columns.absent),
+          present: numberAt(row, columns.present),
+          percentage: numberAt(row, columns.percentage),
+          facultyId: columns.facultyId >= 0 ? row[columns.facultyId] || '' : '',
+          totalDays: numberAt(row, columns.totalDays),
+          facultyName: columns.facultyName >= 0 ? row[columns.facultyName] || '' : '',
+          excuses: numberAt(row, columns.excuses) ?? 0
+        }));
+      } else {
+        const selectionText = /^(row selected\.|to select a row,|row selection disabled\.)/i;
+        const rows = Array.from(document.querySelectorAll('tr')).filter(tr => !tr.querySelector('tr'));
+        attendance = rows.map(tr => {
+          const values = Array.from(tr.children)
+            .filter(cell => /^(TD|TH)$/.test(cell.tagName))
+            .map(cell => normalizeText(cell.innerText))
+            .filter(value => value && !selectionText.test(value));
+          const subjectIndex = values.findIndex((value, index) =>
+            index + 7 < values.length &&
+            !Number.isFinite(Number.parseFloat(value)) &&
+            [1, 2, 3, 4, 5, 7].every(offset => numberAt(values, index + offset) !== null)
+          );
+          if (subjectIndex < 0) return null;
+
+          return {
+            subject: values[subjectIndex],
+            absent: numberAt(values, subjectIndex + 1),
+            present: numberAt(values, subjectIndex + 2),
+            percentage: numberAt(values, subjectIndex + 3),
+            facultyId: values[subjectIndex + 4] || '',
+            totalDays: numberAt(values, subjectIndex + 5),
+            facultyName: values[subjectIndex + 6] || '',
+            excuses: numberAt(values, subjectIndex + 7) ?? 0
+          };
+        }).filter(Boolean);
+      }
+
+      attendance = attendance.filter(row =>
         row.subject && !/^(total|overall|average)\b/i.test(row.subject) &&
         row.present !== null && row.totalDays !== null && row.totalDays > 0
       );
+
+      if (attendance.length === 0) return { metadata, tables: cleanTables, attendance: [] };
 
       const totalPresent = attendance.reduce((sum, row) => sum + row.present, 0);
       const totalDays = attendance.reduce((sum, row) => sum + row.totalDays, 0);
