@@ -2,7 +2,7 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const { chromium } = require('playwright');
-const { v4: uuidv4 } = require('uuid');
+const { randomUUID } = require('crypto');
 
 const app = express();
 app.use(cors({origin: '*'}));
@@ -147,7 +147,7 @@ app.post('/api/login', async (req, res) => {
     }
 
     // 6. Store warm session
-    const sessionId = uuidv4();
+    const sessionId = randomUUID();
     activeSessions.set(sessionId, { browser, context, page, lastActive: Date.now() });
 
     return res.json({
