@@ -202,60 +202,83 @@ app.post('/api/service', async (req, res) => {
       const normalizeText = (value) => (value ?? '').replace(/\u00a0/g, ' ').replace(/\s+/g, ' ').trim();
       const metadata = {};
       const cells = Array.from(document.querySelectorAll('td, span, label'));
-      
-      // 1. Extract Universal Label:Value Metadata
+
       for (let i = 0; i < cells.length - 1; i++) {
         const text = normalizeText(cells[i].innerText);
-        if (text.endsWith(':') && text.length < 40) {
-          const key = text.slice(0, -1).trim();
-          const nextVal = normalizeText(cells[i + 1]?.innerText || '');
-          if (key && nextVal && !nextVal.endsWith(':') && nextVal.length < 100) {
+        const key = text.replace(/:\s*$/, '').trim();
+        const knownProfileField = /^(school|school code|hostel|hostel name|hostel block|hostel details|room no\.?|room number)$/i.test(key);
+        if ((text.endsWith(':') || knownProfileField) && key.length > 0 && key.length < 40) {
+          const valueCell = cells[i + 1];
+          const valueControl = valueCell?.querySelector('input:not([type="hidden"]), textarea, select');
+          const nextVal = normalizeText(valueControl?.value || valueCell?.innerText || '');
+          if (nextVal && !nextVal.endsWith(':') && nextVal.length < 100) {
             metadata[key] = nextVal;
           }
         }
       }
 
-      // 2. Universal Leaf-Row Table Extractor
-      const cleanTables = [];
-      let currentTable = [];
-      let lastColCount = 0;
+      const cleanTables = Array.from(document.querySelectorAll('table')).map(table =>
+        Array.from(table.querySelectorAll('tr'))
+          .filter(tr => !tr.querySelector('tr'))
+          .map(tr => Array.from(tr.children)
+            .filter(cell => /^(TD|TH)$/.test(cell.tagName))
+            .map(cell => normalizeText(cell.innerText)))
+          .filter(row => row.some(Boolean))
+      ).filter(table => table.length > 0);
 
-      const leafRows = Array.from(document.querySelectorAll('tr')).filter(tr => !tr.querySelector('tr'));
+      const headerIndexes = (header) => {
+        const find = (pattern) => header.findIndex(cell => pattern.test(cell));
+        return {
+          subject: find(/subject/i),
+          absent: find(/absent/i),
+          present: find(/present/i),
+          percentage: find(/percentage|percent|attendance\s*%/i),
+          totalDays: find(/total.*days|no\.?\s*of\s*days/i),
+          facultyId: find(/faculty.*(id|code)/i),
+          facultyName: find(/faculty.*name/i),
+          excuses: find(/excuse/i)
+        };
+      };
+      const attendanceTable = cleanTables.find(table =>
+        table.some(row => {
+          const columns = headerIndexes(row);
+          return columns.subject >= 0 && columns.present >= 0 &&
+            columns.percentage >= 0 && columns.totalDays >= 0;
+        })
+      );
 
-      for (const tr of leafRows) {
-        const rowData = Array.from(tr.querySelectorAll('td, th'))
-          .map(td => normalizeText(td.innerText))
-          .filter(text => text.length > 0 && !text.includes('Row selected') && !text.includes('press the spacebar'));
+      if (!attendanceTable) return { metadata, tables: cleanTables };
 
-        if (rowData.length > 1) {
-          if (Math.abs(rowData.length - lastColCount) > 1 && currentTable.length > 0) {
-            cleanTables.push(currentTable);
-            currentTable = [];
-          }
-          currentTable.push(rowData);
-          lastColCount = rowData.length;
-        }
-      }
-      if (currentTable.length > 0) cleanTables.push(currentTable);
+      const headerIndex = attendanceTable.findIndex(row => {
+        const columns = headerIndexes(row);
+        return columns.subject >= 0 && columns.present >= 0 &&
+          columns.percentage >= 0 && columns.totalDays >= 0;
+      });
+      const columns = headerIndexes(attendanceTable[headerIndex]);
+      const numberAt = (row, index) => {
+        if (index < 0 || !row[index]) return null;
+        const parsed = Number.parseFloat(row[index].replace(/,/g, '').replace('%', ''));
+        return Number.isFinite(parsed) ? parsed : null;
+      };
+      const attendance = attendanceTable.slice(headerIndex + 1).map(row => ({
+        subject: row[columns.subject] || '',
+        absent: numberAt(row, columns.absent),
+        present: numberAt(row, columns.present),
+        percentage: numberAt(row, columns.percentage),
+        facultyId: columns.facultyId >= 0 ? row[columns.facultyId] || '' : '',
+        totalDays: numberAt(row, columns.totalDays),
+        facultyName: columns.facultyName >= 0 ? row[columns.facultyName] || '' : '',
+        excuses: numberAt(row, columns.excuses) ?? 0
+      })).filter(row =>
+        row.subject && !/^(total|overall|average)\b/i.test(row.subject) &&
+        row.present !== null && row.totalDays !== null && row.totalDays > 0
+      );
 
-      // 3. Keep the specific Attendance formatter intact
-      let attendance = [];
-      if (cleanTables.length > 0 && cleanTables[0][0] && cleanTables[0][0].includes('Subject')) {
-        attendance = cleanTables[0].slice(1).map(row => ({
-          subject: row[0],
-          absent: parseFloat(row[1]),
-          present: parseFloat(row[2]),
-          percentage: parseFloat(row[3]),
-          facultyId: row[4],
-          totalDays: parseFloat(row[5]),
-          facultyName: row[6] || '',
-          excuses: parseFloat(row[7] || 0)
-        })).filter(item => !isNaN(item.percentage));
-      }
+      const totalPresent = attendance.reduce((sum, row) => sum + row.present, 0);
+      const totalDays = attendance.reduce((sum, row) => sum + row.totalDays, 0);
+      const overallAttendance = totalDays > 0 ? (totalPresent / totalDays) * 100 : null;
 
-      return attendance.length > 0 
-        ? { metadata, attendance } 
-        : { metadata, tables: cleanTables };
+      return { metadata, attendance, overallAttendance };
     });
 
     return res.json({ serviceTitle, ...viewData });
